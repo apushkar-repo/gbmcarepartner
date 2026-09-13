@@ -104,16 +104,20 @@ function Login() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            const normalizedPatientId = patientId.trim().toUpperCase();
             sessionStorage.setItem("carebridge.role", role);
             if (role === "clinician") {
               sessionStorage.removeItem("carebridge.patientId");
               sessionStorage.setItem("carebridge.actorId", "demo-clinician");
             } else {
-              sessionStorage.setItem("carebridge.patientId", patientId.trim());
+              sessionStorage.setItem(
+                "carebridge.patientId",
+                normalizedPatientId,
+              );
               sessionStorage.setItem(
                 "carebridge.actorId",
                 role === "patient"
-                  ? patientId.trim()
+                  ? normalizedPatientId
                   : partnerEmail.trim().toLowerCase(),
               );
             }

@@ -26,11 +26,13 @@ import {
   createCareQuestion,
   createPreparationPlan,
   documentContentUrl,
+  grantCarePartner,
   getCurrentReminder,
   getCurrentPreparationPlan,
   getReminderConsent,
   listCareQuestions,
   listCarePartners,
+  listPatientSummaries,
   listPatientActivity,
   orchestratePreparationPlan,
   saveReminderDraft,
@@ -47,6 +49,7 @@ import {
   type CareQuestionStatus,
   type CarePartnerPermission,
   type PersistedReminder,
+  type PublishedSummary,
   type PreparationPlan,
   type ReminderChannel,
   type ReminderConsent,
@@ -92,13 +95,16 @@ export function Ask() {
   const [source, setSource] = useState<AnswerCitation | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [savedQuestions, setSavedQuestions] = useState<CareQuestion[]>([]);
+  const [summaries, setSummaries] = useState<PublishedSummary[]>([]);
+  const [sourceVersionId, setSourceVersionId] = useState("");
   const [saving, setSaving] = useState(false);
   const patientId = sessionStorage.getItem("carebridge.patientId");
   useEffect(() => {
     if (!patientId) return;
-    listCareQuestions(patientId)
-      .then((questions) => {
+    Promise.all([listCareQuestions(patientId), listPatientSummaries(patientId)])
+      .then(([questions, visitSummaries]) => {
         setSavedQuestions(questions);
+        setSummaries(visitSummaries);
         update((state) => ({
           ...state,
           questions: questions.map(toUiQuestion),
@@ -119,7 +125,11 @@ export function Ask() {
     setAnswer(null);
     try {
       if (!patientId) throw new Error("Select a patient workspace first.");
-      const result = await answerQuestion(patientId, text.trim());
+      const result = await answerQuestion(
+        patientId,
+        text.trim(),
+        sourceVersionId || undefined,
+      );
       setAnswer({
         question: result.question,
         text: result.answer,
@@ -182,6 +192,28 @@ export function Ask() {
               void ask();
             }}
           >
+            <label htmlFor="question-visit">Search within</label>
+            <select
+              id="question-visit"
+              value={sourceVersionId}
+              onChange={(event) => {
+                setSourceVersionId(event.target.value);
+                setAnswer(null);
+              }}
+            >
+              <option value="">All approved visits</option>
+              {summaries.map((summary, index) => (
+                <option key={summary.id} value={summary.id}>
+                  {index === 0
+                    ? "Most recent visit"
+                    : index === 1
+                      ? "Previous visit"
+                      : `${index} visits ago`}{" "}
+                  · {summary.filename} ·{" "}
+                  {new Date(summary.created_at).toLocaleDateString()}
+                </option>
+              ))}
+            </select>
             <label className="sr-only" htmlFor="ask-question">
               Your question
             </label>
@@ -1633,6 +1665,8 @@ export function ActivityPage() {
 export function Sharing() {
   const [grants, setGrants] = useState<CarePartnerPermission[]>([]);
   const [saving, setSaving] = useState("");
+  const [partnerEmail, setPartnerEmail] = useState("");
+  const [adding, setAdding] = useState(false);
   const [error, setError] = useState("");
   const patientId = sessionStorage.getItem("carebridge.patientId");
   useEffect(() => {
@@ -1647,6 +1681,25 @@ export function Sharing() {
           ),
         );
   }, [patientId]);
+  async function addCarePartner(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!patientId || !partnerEmail.trim()) return;
+    setAdding(true);
+    setError("");
+    try {
+      await grantCarePartner(patientId, partnerEmail.trim());
+      setGrants(await listCarePartners(patientId));
+      setPartnerEmail("");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "The care partner could not be added.",
+      );
+    } finally {
+      setAdding(false);
+    }
+  }
   async function change(
     grant: CarePartnerPermission,
     update: Parameters<typeof updateCarePartnerPermission>[2],
@@ -1698,9 +1751,36 @@ export function Sharing() {
         </p>
       )}
       <section className="card">
+        <form className="sharing-add-form" onSubmit={addCarePartner}>
+          <div>
+            <h2>Add a care partner</h2>
+            <p className="muted">
+              Enter the email address they will use to access CareBridge.
+            </p>
+          </div>
+          <label className="sr-only" htmlFor="sharing-partner-email">
+            Care-partner email
+          </label>
+          <input
+            id="sharing-partner-email"
+            type="email"
+            value={partnerEmail}
+            onChange={(event) => setPartnerEmail(event.target.value)}
+            placeholder="Care-partner email"
+            required
+          />
+          <button
+            className="button primary"
+            type="submit"
+            disabled={adding || !partnerEmail.trim()}
+          >
+            <Plus size={16} />
+            {adding ? "Adding…" : "Add care partner"}
+          </button>
+        </form>
         {grants.length === 0 && (
           <Empty icon={HeartHandshake} title="No authorized care partners">
-            Ask your clinician to add a care partner before managing access.
+            Add someone you trust, then choose what they may help with.
           </Empty>
         )}
         {grants.map((grant) => (

@@ -31,6 +31,7 @@ from .mock_scheduler import (
     MockSchedulerTimeout,
 )
 from .ocr import LlamaParseAdapter, OcrUnavailable
+from .observability import carebridge_trace, tracing_enabled
 from .preparation import PreparationUnavailable, generate_preparation
 from .preparation_evaluations import (
     load_preparation_cases,
@@ -138,6 +139,7 @@ class CarePartnerPermissionUpdate(BaseModel):
 
 class QuestionRequest(BaseModel):
     question: str
+    source_version_id: str | None = None
 
 class CareQuestionCreate(BaseModel):
     text: str
@@ -613,8 +615,10 @@ def grant_care_partner(patient_id: str, grant: CarePartnerGrant, actor_role: str
     if not email: raise HTTPException(400, "Care-partner email is required.")
     conn = db()
     authorize_patient(conn, patient_id, actor_role, actor_id)
-    if actor_role != "patient" or actor_id != patient_id:
-        conn.close(); raise HTTPException(403, "Only the patient can authorize a care partner.")
+    patient_owner = actor_role == "patient" and actor_id == patient_id
+    assigned_clinician = actor_role == "clinician" and bool(actor_id)
+    if not (patient_owner or assigned_clinician):
+        conn.close(); raise HTTPException(403, "Only the patient or a clinician can authorize a care partner.")
     if conn.execute("SELECT 1 FROM patients WHERE id=?", (patient_id,)).fetchone() is None:
         conn.close(); raise HTTPException(404, "Patient not found.")
     now = datetime.now(timezone.utc).isoformat()
@@ -628,6 +632,8 @@ def grant_care_partner(patient_id: str, grant: CarePartnerGrant, actor_role: str
 @app.get("/api/v1/patients/{patient_id}/care-partners")
 def list_care_partners(patient_id: str, actor_role: str = "", actor_id: str = ""):
     conn = db(); authorize_patient(conn, patient_id, actor_role, actor_id)
+    if conn.execute("SELECT 1 FROM patients WHERE id=?", (patient_id,)).fetchone() is None:
+        conn.close(); raise HTTPException(404, "Patient not found. Ask the clinician to onboard the patient again and use the newly generated patient ID.")
     rows = conn.execute("""SELECT g.id,g.partner_email,g.status,g.created_at,
         COALESCE(p.can_view_records,1) can_view_records,COALESCE(p.can_manage_questions,1) can_manage_questions,
         COALESCE(p.can_approve_actions,0) can_approve_actions,COALESCE(p.version,1) version,p.updated_at
@@ -666,6 +672,23 @@ def update_care_partner(patient_id: str, grant_id: str, request: CarePartnerPerm
 
 @app.get("/health")
 def health(): return {"status": "ok", "service": "carebridge-api"}
+
+@app.get("/api/v1/observability/status")
+def observability_status(actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
+    return {
+        "provider": "langsmith",
+        "enabled": tracing_enabled(),
+        "project": os.getenv("LANGSMITH_PROJECT", "carebridge-development"),
+        "inputs_hidden": True,
+        "outputs_hidden": True,
+        "instrumented_workflows": [
+            "document_ocr",
+            "grounded_answer",
+            "preparation_planner",
+            "action_orchestrator",
+        ],
+    }
 
 @app.post("/api/v1/documents", response_model=DocumentOut, status_code=202)
 async def upload_document(file: Annotated[UploadFile, File()], workspace_id: str = "demo-workspace", patient_id: str | None = None, actor_role: str = "", actor_id: str = ""):
@@ -892,11 +915,28 @@ def run_publication_index_worker(actor_role: str = "", actor_id: str = ""):
     return {"processed":len(processed),"failed":len(failed),"pending_examined":len(rows)}
 
 @app.get("/api/v1/patients/{patient_id}/search")
-def search_patient_summaries(patient_id: str, q: str, actor_role: str = "", actor_id: str = ""):
+def search_patient_summaries(patient_id: str, q: str, actor_role: str = "", actor_id: str = "", source_version_id: str | None = None):
     conn = db(); authorize_patient(conn, patient_id, actor_role, actor_id)
     if not q.strip():
         conn.close()
         return {"query": q, "retrieval_mode": "bm25", "results": []}
+    if source_version_id:
+        selected = conn.execute("""
+          SELECT dv.id AS version_id,json_extract(dv.payload,'$.text') AS content,
+                 d.id AS document_id,d.filename,dv.version
+          FROM document_versions dv
+          JOIN extraction_jobs j ON j.id=dv.job_id
+          JOIN documents d ON d.id=j.document_id
+          JOIN patient_documents pd ON pd.document_id=d.id
+          WHERE dv.id=? AND pd.patient_id=? AND dv.status='index_ready'
+        """, (source_version_id, patient_id)).fetchone()
+        conn.close()
+        return {
+            "query": q,
+            "retrieval_mode": "bm25",
+            "semantic_warning": None,
+            "results": [{**dict(selected), "score": 1.0}] if selected else [],
+        }
     tokens = re.findall(r"[A-Za-z0-9]+", q.lower())
     lexical_rows = []
     if tokens:
@@ -974,6 +1014,14 @@ def answer_patient_question(
            WHERE pd.patient_id=? AND dv.status='index_ready'""",
         (patient_id,),
     ).fetchone()[0]
+    if request.source_version_id:
+        evidence_count = conn.execute(
+            """SELECT COUNT(*) FROM document_versions dv
+               JOIN extraction_jobs j ON j.id=dv.job_id
+               JOIN patient_documents pd ON pd.document_id=j.document_id
+               WHERE pd.patient_id=? AND dv.id=? AND dv.status='index_ready'""",
+            (patient_id, request.source_version_id),
+        ).fetchone()[0]
     conn.close()
     run_id = start_workflow_run(
         patient_id, "grounded_answer", os.getenv("OPENAI_ANSWER_MODEL", "gpt-4o-mini"),
@@ -982,11 +1030,36 @@ def answer_patient_question(
 
     def retrieve(authorized_question: str):
         return search_patient_summaries(
-            patient_id, authorized_question, actor_role, actor_id
+            patient_id,
+            authorized_question,
+            actor_role,
+            actor_id,
+            request.source_version_id,
         )
 
     try:
-        result = answer_question(question, retrieve)
+        with carebridge_trace(
+            "carebridge.grounded_answer",
+            metadata={
+                "actor_role": actor_role,
+                "input_count": evidence_count,
+                "model": os.getenv("OPENAI_ANSWER_MODEL", "gpt-4o-mini"),
+                "scoped_to_visit": bool(request.source_version_id),
+                "workflow_run_id": run_id,
+            },
+            tags=["answer", "langgraph"],
+        ) as trace_span:
+            result = answer_question(question, retrieve)
+            trace_span.record(
+                status="stopped" if result["abstained"] else "completed",
+                result_count=len(result["citations"]),
+                retrieval_mode=result.get("retrieval_mode", "bm25"),
+                stop_reason=(
+                    "insufficient_supported_evidence"
+                    if result["abstained"]
+                    else None
+                ),
+            )
         finish_workflow_run(
             run_id,
             "stopped" if result["abstained"] else "completed",
@@ -1238,7 +1311,22 @@ def create_preparation_plan(
         len(context["summaries"]) + len(context["questions"]),
     )
     try:
-        proposed = generate_preparation(lambda: context)
+        with carebridge_trace(
+            "carebridge.preparation_planner",
+            metadata={
+                "actor_role": actor_role,
+                "input_count": len(context["summaries"]) + len(context["questions"]),
+                "model": os.getenv("OPENAI_PREPARATION_MODEL", "gpt-4o-mini"),
+                "workflow_run_id": run_id,
+            },
+            tags=["preparation", "langgraph"],
+        ) as trace_span:
+            proposed = generate_preparation(lambda: context)
+            trace_span.record(
+                status="completed" if proposed["verified"] else "stopped",
+                item_count=len(proposed["items"]),
+                stop_reason=None if proposed["verified"] else "verification_failed",
+            )
     except PreparationUnavailable as exc:
         finish_workflow_run(run_id, "failed", 0, "model_unavailable")
         logger.exception("Preparation workflow failed for patient %s", patient_id)
@@ -2295,10 +2383,21 @@ def orchestrate_preparation_actions(patient_id: str, plan_id: str, actor_id: str
     )
     created=[]
     try:
-        proposals = propose_preparation_actions(requests)
-        for proposal in proposals:
-            arrangement=create_arrangement(patient_id,ArrangementDraft(action_type=proposal["action_type"],payload=proposal["payload"],source_version_ids=proposal["source_version_ids"]),"patient",patient_id)
-            update=db(); update.execute("UPDATE preparation_task_actions SET specialist_status=?,arrangement_id=?,updated_at=? WHERE task_id=?",(arrangement["status"],arrangement["id"],datetime.now(timezone.utc).isoformat(),proposal["task_id"])); update.commit(); update.close(); created.append(arrangement)
+        with carebridge_trace(
+            "carebridge.action_orchestrator",
+            metadata={
+                "actor_role": "patient",
+                "input_count": len(requests),
+                "model": "deterministic-specialists",
+                "workflow_run_id": run_id,
+            },
+            tags=["actions", "langgraph"],
+        ) as trace_span:
+            proposals = propose_preparation_actions(requests)
+            for proposal in proposals:
+                arrangement=create_arrangement(patient_id,ArrangementDraft(action_type=proposal["action_type"],payload=proposal["payload"],source_version_ids=proposal["source_version_ids"]),"patient",patient_id)
+                update=db(); update.execute("UPDATE preparation_task_actions SET specialist_status=?,arrangement_id=?,updated_at=? WHERE task_id=?",(arrangement["status"],arrangement["id"],datetime.now(timezone.utc).isoformat(),proposal["task_id"])); update.commit(); update.close(); created.append(arrangement)
+            trace_span.record(status="completed", result_count=len(created))
     except Exception:
         finish_workflow_run(run_id, "failed", len(created), "specialist_workflow_failed")
         raise
@@ -2609,7 +2708,7 @@ def list_patient_summaries(patient_id: str, actor_role: str = "", actor_id: str 
       JOIN documents d ON d.id=pd.document_id
       JOIN extraction_jobs j ON j.document_id=d.id
       JOIN document_versions dv ON dv.job_id=j.id
-      WHERE pd.patient_id=?
+      WHERE pd.patient_id=? AND dv.status='index_ready'
       ORDER BY dv.created_at DESC
     """, (patient_id,)).fetchall()
     conn.close()
@@ -2629,7 +2728,28 @@ async def process_extraction_job(job_id: str, workspace_id: str = "demo-workspac
     if row is None:
         raise HTTPException(404, "Extraction job not found.")
     try:
-        result = await LlamaParseAdapter(os.getenv("LLAMA_CLOUD_API_KEY")).parse((STORAGE_PATH / row["document_id"]).read_bytes(), row["filename"])
+        content = (STORAGE_PATH / row["document_id"]).read_bytes()
+        with carebridge_trace(
+            "carebridge.document_ocr",
+            run_type="tool",
+            metadata={
+                "actor_role": actor_role,
+                "file_size_bytes": len(content),
+                "model": os.getenv("LLAMA_PARSE_TIER", "agentic_plus"),
+                "provider": "llamaparse",
+            },
+            tags=["ocr"],
+        ) as trace_span:
+            result = await LlamaParseAdapter(
+                os.getenv("LLAMA_CLOUD_API_KEY"),
+                tier=os.getenv("LLAMA_PARSE_TIER", "agentic_plus"),
+                version=os.getenv("LLAMA_PARSE_VERSION", "latest"),
+            ).parse(content, row["filename"])
+            trace_span.record(
+                status="completed",
+                page_count=result.pages,
+                provider=result.provider,
+            )
         conn = db()
         conn.execute("UPDATE documents SET status='completed' WHERE id=(SELECT document_id FROM extraction_jobs WHERE id=?)", (job_id,))
         conn.execute("UPDATE extraction_jobs SET status='completed' WHERE id=?", (job_id,))

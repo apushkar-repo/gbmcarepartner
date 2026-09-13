@@ -1502,6 +1502,10 @@ fieldset {
   flex: 1;
   white-space: pre-wrap;
 }
+.extraction-retry {
+  align-self: flex-end;
+  margin: 0 0 12px;
+}
 .source-container {
   background: #efeee7;
   padding: 22px;
@@ -2262,6 +2266,22 @@ fieldset {
   margin-top: 24px;
   padding-top: 24px;
 }
+.sharing-add-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+.sharing-add-form h2 {
+  font-size: 18px;
+}
+.sharing-add-form p {
+  margin-top: 4px;
+  font-size: 11px;
+}
 .arrangement-controls {
   display: flex;
   gap: 12px;
@@ -2616,6 +2636,10 @@ fieldset {
   }
   .permission-line {
     flex-wrap: wrap;
+  }
+  .sharing-add-form {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
   .helper-permission {
     flex-wrap: wrap;

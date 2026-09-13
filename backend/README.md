@@ -111,6 +111,14 @@ status, input/result counts and stop reason. To enable LangSmith tracing, set
 `.env`. The application forces `LANGSMITH_HIDE_INPUTS=true` and
 `LANGSMITH_HIDE_OUTPUTS=true` before importing LangGraph whenever tracing is
 enabled. Choose an approved `LANGSMITH_ENDPOINT` for the deployment region.
+CareBridge creates parent spans for OCR, grounded answers, preparation planning,
+and action orchestration. LangGraph node runs appear beneath their workflow
+span. Trace metadata is limited to roles, models, provider names, status and
+counts; document text, questions, answers, patient identifiers, names, contact
+details and uploaded bytes are excluded. Tracing failures do not interrupt the
+application, and the local `workflow_runs` records remain authoritative.
+Clinicians can verify configuration without exposing credentials through
+`GET /api/v1/observability/status?actor_role=clinician&actor_id=<id>`.
 
 ## Development evaluations
 

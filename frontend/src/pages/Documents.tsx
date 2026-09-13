@@ -412,6 +412,7 @@ export function ExtractionReview() {
   const [documentId, setDocumentId] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [approval, setApproval] = useState(false);
   const [published, setPublished] = useState("");
   const [savedVersion, setSavedVersion] = useState<number | null>(null);
@@ -432,6 +433,27 @@ export function ExtractionReview() {
         ),
       );
   }, [jobId]);
+  async function extractAgain() {
+    if (!jobId || extracting) return;
+    setExtracting(true);
+    setError("");
+    try {
+      await processExtraction(jobId);
+      const result = await getExtractionResult(jobId);
+      setText(markdownToPlainText(result.text));
+      setApproval(false);
+      setSavedVersion(null);
+      setPublished("");
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "The document could not be extracted again.",
+      );
+    } finally {
+      setExtracting(false);
+    }
+  }
   async function saveCorrections() {
     if (!jobId) return;
     setSaving(true);
@@ -500,6 +522,15 @@ export function ExtractionReview() {
               <h2>Extracted text</h2>
               <Badge tone="amber">Needs review</Badge>
             </div>
+            <button
+              className="button secondary extraction-retry"
+              type="button"
+              onClick={extractAgain}
+              disabled={extracting || saving}
+            >
+              <RotateCw size={16} />
+              {extracting ? "Extracting again…" : "Improve extraction"}
+            </button>
             <label htmlFor="reviewed-transcript">Full transcript</label>
             <textarea
               id="reviewed-transcript"

@@ -78,6 +78,58 @@ class SearchFlowTests(unittest.TestCase):
             "PINECONE_INDEX": "",
         },
     )
+    def test_search_can_be_scoped_to_an_older_approved_visit(self):
+        conn = main.db()
+        conn.execute(
+            "INSERT INTO documents VALUES (?,?,?,?,?,?,?,?)",
+            ("document-old", "workspace-1", "older-visit.png", "image/png", 10, "old-digest", "completed", "earlier"),
+        )
+        conn.execute(
+            "INSERT INTO extraction_jobs VALUES (?,?,?,?)",
+            ("job-old", "document-old", "completed", "earlier"),
+        )
+        conn.execute(
+            "INSERT INTO patient_documents VALUES (?,?)",
+            ("patient-1", "document-old"),
+        )
+        conn.execute(
+            "INSERT INTO document_versions VALUES (?,?,?,?,?,?,?)",
+            (
+                "version-old",
+                "job-old",
+                json.dumps({"text": "The older visit requested blood work.", "audience": "patient"}),
+                1,
+                "indexing_pending",
+                "clinician-1",
+                "earlier",
+            ),
+        )
+        conn.commit()
+        conn.close()
+        main.index_document_version("version-1", "clinician", "c1")
+        main.index_document_version("version-old", "clinician", "c1")
+
+        result = main.search_patient_summaries(
+            "patient-1",
+            "What was requested?",
+            "patient",
+            "patient-1",
+            "version-old",
+        )
+
+        self.assertEqual(len(result["results"]), 1)
+        self.assertEqual(result["results"][0]["version_id"], "version-old")
+        self.assertIn("blood work", result["results"][0]["content"])
+
+    @patch.dict(
+        os.environ,
+        {
+            "OPENAI_API_KEY": "",
+            "PINECONE_API_KEY": "",
+            "PINECONE_INDEX_HOST": "",
+            "PINECONE_INDEX": "",
+        },
+    )
     def test_answer_endpoint_abstains_without_model_call_when_no_evidence_exists(self):
         result = main.answer_patient_question(
             "patient-1",

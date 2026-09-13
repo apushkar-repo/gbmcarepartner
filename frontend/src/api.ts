@@ -94,8 +94,13 @@ export async function grantCarePartner(
       body: JSON.stringify({ partner_email: partnerEmail }),
     },
   );
-  if (!response.ok)
-    throw new Error("Care-partner access could not be granted.");
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(
+      detail.detail ??
+        `Care-partner access could not be granted (${response.status}).`,
+    );
+  }
 }
 
 export interface CarePartnerPermission {
@@ -116,7 +121,13 @@ export async function listCarePartners(
   const response = await fetch(
     `${API_URL}/api/v1/patients/${encodeURIComponent(patientId)}/care-partners?${actorQuery()}`,
   );
-  if (!response.ok) throw new Error("Sharing permissions could not be loaded.");
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(
+      detail.detail ??
+        `Sharing permissions could not be loaded (${response.status}).`,
+    );
+  }
   return response.json();
 }
 
@@ -191,13 +202,17 @@ export interface GroundedAnswer {
 export async function answerQuestion(
   patientId: string,
   question: string,
+  sourceVersionId?: string,
 ): Promise<GroundedAnswer> {
   const response = await fetch(
     `${API_URL}/api/v1/patients/${encodeURIComponent(patientId)}/answer?${actorQuery()}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        source_version_id: sourceVersionId || null,
+      }),
     },
   );
   if (!response.ok) {

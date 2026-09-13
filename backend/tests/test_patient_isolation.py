@@ -97,6 +97,30 @@ class PatientIsolationTests(unittest.TestCase):
             )
         )
 
+    def test_patient_and_clinician_can_grant_access_to_the_patient_workspace(self):
+        patient_grant = main.grant_care_partner(
+            "patient-a",
+            main.CarePartnerGrant(partner_email="patient-choice@example.test"),
+            "patient",
+            "patient-a",
+        )
+        clinician_grant = main.grant_care_partner(
+            "patient-b",
+            main.CarePartnerGrant(partner_email="clinician-choice@example.test"),
+            "clinician",
+            "c1",
+        )
+
+        self.assertEqual(patient_grant["status"], "active")
+        self.assertEqual(clinician_grant["status"], "active")
+
+    def test_removed_patient_gets_a_clear_sharing_error(self):
+        with self.assertRaises(main.HTTPException) as raised:
+            main.list_care_partners("removed-patient", "patient", "removed-patient")
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("onboard the patient again", raised.exception.detail)
+
     def test_document_management_endpoints_require_a_clinician(self):
         self.assert_forbidden(
             lambda: main.list_documents("workspace", "patient", "patient-a")

@@ -165,6 +165,14 @@ def build_action_orchestration_graph():
 
 def propose_preparation_actions(requests: list[ActionRequest]):
     result = build_action_orchestration_graph().invoke(
-        {"requests": requests, "proposals": []}
+        {"requests": requests, "proposals": []},
+        config={
+            "run_name": "carebridge-action-orchestrator",
+            "tags": ["carebridge", "actions"],
+            "metadata": {
+                "content_redacted": True,
+                "request_count": len(requests),
+            },
+        },
     )
     return result.get("proposals", [])

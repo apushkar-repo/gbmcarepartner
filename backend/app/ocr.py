@@ -22,8 +22,15 @@ class OcrUnavailable(RuntimeError):
 class LlamaParseAdapter:
     """LlamaParse adapter; importing the optional SDK only when called."""
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        tier: str = "agentic_plus",
+        version: str = "latest",
+    ):
         self.api_key = api_key
+        self.tier = tier
+        self.version = version
 
     async def parse(self, content: bytes, filename: str) -> OcrResult:
         if not self.api_key:
@@ -35,7 +42,22 @@ class LlamaParseAdapter:
         temp = Path("/tmp") / f"carebridge-{filename}"
         temp.write_bytes(content)
         try:
-            parser = LlamaParse(api_key=self.api_key, result_type="text", verbose=False)
+            parser = LlamaParse(
+                api_key=self.api_key,
+                result_type="text",
+                tier=self.tier,
+                version=self.version,
+                high_res_ocr=True,
+                language="en",
+                user_prompt=(
+                    "Transcribe every visible word from this visit document verbatim in "
+                    "natural reading order. Preserve headings, line breaks, dates, medication "
+                    "names, doses, tests, and appointments. Do not summarize, correct, infer, "
+                    "or add medical content. Write [unclear] for text that cannot be read "
+                    "reliably. Return plain text without Markdown formatting."
+                ),
+                verbose=False,
+            )
             documents = await asyncio.to_thread(parser.load_data, str(temp))
             text = "\n\n".join(getattr(doc, "text", str(doc)) for doc in documents)
             return OcrResult(text=text, pages=len(documents), provider="llamaparse")
