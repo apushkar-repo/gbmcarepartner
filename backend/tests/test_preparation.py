@@ -30,15 +30,17 @@ CONTEXT = {
 
 
 class FakeModel:
-    def __init__(self, item: PreparationItem, supported: bool = True):
-        self.item = item
+    def __init__(
+        self, item: PreparationItem | list[PreparationItem], supported: bool = True
+    ):
+        self.items = item if isinstance(item, list) else [item]
         self.supported = supported
         self.draft_calls = 0
         self.verify_calls = 0
 
     def draft(self, context):
         self.draft_calls += 1
-        return PreparationDraft(summary="Prepare for the visit", items=[self.item])
+        return PreparationDraft(summary="Prepare for the visit", items=self.items)
 
     def verify(self, draft, context):
         self.verify_calls += 1
@@ -58,7 +60,7 @@ def document_item(version_id="version-1"):
 
 
 class PreparationGraphTests(unittest.TestCase):
-    def test_explicit_lab_and_appointment_are_prioritized_and_travel_is_offered(self):
+    def test_agent_generated_actions_pass_through_without_application_content_injection(self):
         context = {
             "summaries": [
                 {
@@ -76,20 +78,52 @@ class PreparationGraphTests(unittest.TestCase):
             ],
             "questions": [],
         }
-        generic = PreparationItem(
-            title="Prepare questions",
-            description="Write down questions for the next visit.",
-            origin_type="document_instruction",
-            source_version_ids=["version-visit"],
-        )
+        generated = [
+            PreparationItem(
+                title="Arrange blood work",
+                description="Arrange the documented CBC and RFT blood work.",
+                origin_type="document_instruction",
+                source_version_ids=["version-visit"],
+                blocked_reason="An order reference is required.",
+                action_type="laboratory",
+                documented_service="CBC and RFT blood work",
+            ),
+            PreparationItem(
+                title="Review the next appointment",
+                description="Review the documented clinic appointment.",
+                origin_type="document_instruction",
+                source_version_ids=["version-visit"],
+                action_type="clinic_appointment",
+                documented_date="2026-10-08",
+                documented_service="Neuro-Oncology Clinic",
+            ),
+            PreparationItem(
+                title="Decide whether travel help is needed",
+                description="Confirm whether travel assistance is needed.",
+                origin_type="app_suggestion",
+                source_version_ids=["version-visit"],
+                blocked_reason="Confirm the need and pickup location.",
+                action_type="travel",
+                documented_date="2026-10-08",
+                documented_service="Neuro-Oncology Clinic",
+            ),
+        ]
 
-        result = build_preparation_graph(lambda: context, FakeModel(generic)).invoke({})
+        result = build_preparation_graph(lambda: context, FakeModel(generated)).invoke({})
 
         actions = {item["action_type"]: item for item in result["items"]}
         self.assertEqual(actions["clinic_appointment"]["documented_date"], "2026-10-08")
         self.assertIn("blood work", actions["laboratory"]["documented_service"].lower())
         self.assertEqual(actions["travel"]["origin_type"], "app_suggestion")
         self.assertIsNotNone(actions["travel"]["blocked_reason"])
+
+    def test_graph_does_not_add_actions_that_the_agent_did_not_generate(self):
+        result = build_preparation_graph(
+            lambda: CONTEXT, FakeModel(document_item())
+        ).invoke({})
+
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["action_type"], "none")
 
     def test_no_context_returns_empty_plan_without_model_call(self):
         model = FakeModel(document_item())

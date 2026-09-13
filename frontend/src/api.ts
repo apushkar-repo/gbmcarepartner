@@ -21,8 +21,9 @@ export async function uploadDocument(
 ): Promise<UploadReceipt> {
   const body = new FormData();
   body.append("file", file);
-  const query = patientId ? `?patient_id=${encodeURIComponent(patientId)}` : "";
-  const response = await fetch(`${API_URL}/api/v1/documents${query}`, {
+  const query = new URLSearchParams(actorQuery());
+  if (patientId) query.set("patient_id", patientId);
+  const response = await fetch(`${API_URL}/api/v1/documents?${query}`, {
     method: "POST",
     body,
   });
@@ -41,7 +42,7 @@ export interface Patient {
   summary_count?: number;
 }
 export async function listPatients(): Promise<Patient[]> {
-  const response = await fetch(`${API_URL}/api/v1/patients`);
+  const response = await fetch(`${API_URL}/api/v1/patients?${actorQuery()}`);
   if (!response.ok) throw new Error("Patients could not be loaded.");
   return response.json();
 }
@@ -50,7 +51,7 @@ export async function createPatient(input: {
   email?: string;
   phone?: string;
 }): Promise<Patient> {
-  const response = await fetch(`${API_URL}/api/v1/patients`, {
+  const response = await fetch(`${API_URL}/api/v1/patients?${actorQuery()}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -86,7 +87,7 @@ export async function grantCarePartner(
   partnerEmail: string,
 ): Promise<void> {
   const response = await fetch(
-    `${API_URL}/api/v1/patients/${encodeURIComponent(patientId)}/care-partners`,
+    `${API_URL}/api/v1/patients/${encodeURIComponent(patientId)}/care-partners?${actorQuery()}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -333,6 +334,7 @@ export interface PreparationTask {
     action_type:
       "none" | "clinic_appointment" | "laboratory" | "imaging" | "travel";
     documented_date?: string | null;
+    documented_time?: string | null;
     documented_service?: string | null;
     order_reference?: string | null;
     specialist_status: string;
@@ -876,7 +878,7 @@ export async function processExtraction(
   jobId: string,
 ): Promise<{ status: string; pages?: number }> {
   const response = await fetch(
-    `${API_URL}/api/v1/extraction-jobs/${jobId}/process`,
+    `${API_URL}/api/v1/extraction-jobs/${jobId}/process?${actorQuery()}`,
     { method: "POST" },
   );
   if (!response.ok) {
@@ -895,7 +897,7 @@ export async function getExtractionResult(jobId: string): Promise<{
   provider: string;
 }> {
   const response = await fetch(
-    `${API_URL}/api/v1/extraction-jobs/${jobId}/result`,
+    `${API_URL}/api/v1/extraction-jobs/${jobId}/result?${actorQuery()}`,
   );
   if (!response.ok)
     throw new Error("The extraction result is not available yet.");
@@ -908,7 +910,7 @@ export async function publishExtraction(
   audience: string,
 ): Promise<{ id: string; status: string; version: number }> {
   const response = await fetch(
-    `${API_URL}/api/v1/extraction-jobs/${jobId}/publish`,
+    `${API_URL}/api/v1/extraction-jobs/${jobId}/publish?${actorQuery()}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -923,7 +925,7 @@ export async function indexPublishedSummary(
   versionId: string,
 ): Promise<{ status: string }> {
   const response = await fetch(
-    `${API_URL}/api/v1/document-versions/${versionId}/index`,
+    `${API_URL}/api/v1/document-versions/${versionId}/index?${actorQuery()}`,
     { method: "POST" },
   );
   if (!response.ok)
@@ -936,7 +938,7 @@ export async function saveTranscriptCorrection(
   text: string,
 ): Promise<{ version: number }> {
   const response = await fetch(
-    `${API_URL}/api/v1/extraction-jobs/${jobId}/transcript`,
+    `${API_URL}/api/v1/extraction-jobs/${jobId}/transcript?${actorQuery()}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

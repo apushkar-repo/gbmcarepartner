@@ -396,6 +396,7 @@ export function Visit() {
   const [planError, setPlanError] = useState("");
   const [planLoading, setPlanLoading] = useState(false);
   const planLoadPatient = useRef<string | null>(null);
+  const preparationLoadPatient = useRef<string | null>(null);
   const patientId = sessionStorage.getItem("carebridge.patientId");
   useEffect(() => {
     if (!patientId) return;
@@ -418,6 +419,8 @@ export function Visit() {
   }, [patientId]);
   useEffect(() => {
     if (!patientId) return;
+    if (preparationLoadPatient.current === patientId) return;
+    preparationLoadPatient.current = patientId;
     setPlanLoading(true);
     setPlanError("");
     getCurrentPreparationPlan(patientId)

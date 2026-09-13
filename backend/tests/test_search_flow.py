@@ -59,7 +59,7 @@ class SearchFlowTests(unittest.TestCase):
         },
     )
     def test_approved_summary_is_searchable_with_bm25_fallback(self):
-        indexed = main.index_document_version("version-1")
+        indexed = main.index_document_version("version-1", "clinician", "c1")
         result = main.search_patient_summaries(
             "patient-1", "medication", "patient", "patient-1"
         )
@@ -118,7 +118,7 @@ class SearchFlowTests(unittest.TestCase):
         },
     )
     def test_new_document_version_supersedes_search_and_plan_sources(self):
-        main.index_document_version("version-1")
+        main.index_document_version("version-1", "clinician", "c1")
         conn = main.db()
         conn.execute(
             """INSERT INTO preparation_plans
@@ -153,7 +153,7 @@ class SearchFlowTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        main.index_document_version("version-2")
+        main.index_document_version("version-2", "clinician", "c1")
 
         conn = main.db()
         statuses = {
@@ -187,7 +187,7 @@ class SearchFlowTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        result = main.index_document_version("version-1")
+        result = main.index_document_version("version-1", "clinician", "c1")
 
         self.assertEqual(result["status"], "superseded")
         conn = main.db()
@@ -338,7 +338,10 @@ class SearchFlowTests(unittest.TestCase):
             ],
         }
         main.grant_care_partner(
-            "patient-1", main.CarePartnerGrant(partner_email="partner@example.test")
+            "patient-1",
+            main.CarePartnerGrant(partner_email="partner@example.test"),
+            "patient",
+            "patient-1",
         )
         draft = main.create_preparation_plan(
             "patient-1", "partner", "partner@example.test"

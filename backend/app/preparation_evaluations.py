@@ -135,6 +135,7 @@ def run_preparation_evaluation_case(
             "task_id": f"{case.case_id}-{position}",
             "action_type": item["action_type"],
             "documented_date": item.get("documented_date"),
+            "documented_time": item.get("documented_time"),
             "documented_service": item.get("documented_service"),
             "order_reference": item.get("order_reference"),
             "source_version_ids": item.get("source_version_ids", []),

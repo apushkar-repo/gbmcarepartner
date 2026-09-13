@@ -179,7 +179,10 @@ class ReminderLifecycleTests(unittest.TestCase):
 
     def test_care_partner_cannot_approve(self):
         main.grant_care_partner(
-            "patient-1", main.CarePartnerGrant(partner_email="partner@example.test")
+            "patient-1",
+            main.CarePartnerGrant(partner_email="partner@example.test"),
+            "patient",
+            "patient-1",
         )
         created = main.create_reminder(
             "patient-1", self.draft(), "partner", "partner@example.test"

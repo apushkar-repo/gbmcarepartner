@@ -50,7 +50,12 @@ class ArrangementAndSharingTests(unittest.TestCase):
         self.assertIn("full_date_with_year", draft["payload"]["missing_inputs"])
 
     def test_patient_can_revoke_persisted_partner_access(self):
-        grant = main.grant_care_partner("p1", main.CarePartnerGrant(partner_email="partner@test.local"))
+        grant = main.grant_care_partner(
+            "p1",
+            main.CarePartnerGrant(partner_email="partner@test.local"),
+            "patient",
+            "p1",
+        )
         current = main.list_care_partners("p1", "patient", "p1")[0]
 
         changed = main.update_care_partner("p1", grant["id"], main.CarePartnerPermissionUpdate(status="revoked", expected_version=current["version"]), "patient", "p1")
@@ -77,8 +82,8 @@ class ArrangementAndSharingTests(unittest.TestCase):
                 (task_id, "plan-1", "p1", service, service, "document_instruction", "[]", "[]", None, "open", position, None, None),
             )
             conn.execute(
-                "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?)",
-                (task_id, action_type, documented_date, service, None, "identified", None, "now"),
+                "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?,?)",
+                (task_id, action_type, documented_date, None, service, None, "identified", None, "now"),
             )
         conn.commit()
         conn.close()
@@ -94,7 +99,7 @@ class ArrangementAndSharingTests(unittest.TestCase):
         self.assertEqual(by_type["imaging"]["payload"]["date"], "2026-09-09")
         self.assertEqual(by_type["lab"]["payload"]["order_id"], "")
         self.assertEqual(by_type["imaging"]["payload"]["order_id"], "")
-        self.assertEqual(by_type["appointment"]["status"], "awaiting_approval")
+        self.assertEqual(by_type["appointment"]["status"], "awaiting_information")
         self.assertEqual(by_type["lab"]["status"], "awaiting_information")
         self.assertEqual(by_type["imaging"]["status"], "awaiting_information")
 
@@ -109,8 +114,8 @@ class ArrangementAndSharingTests(unittest.TestCase):
             ("task-auto", "plan-auto", "p1", "Book follow-up", "Book the documented follow-up.", "document_instruction", "[]", "[]", None, "proposed", 0, None, None),
         )
         conn.execute(
-            "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?)",
-            ("task-auto", "clinic_appointment", "2026-09-16", "Follow-up", None, "identified", None, "now"),
+            "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?,?)",
+            ("task-auto", "clinic_appointment", "2026-09-16", "10:00", "Follow-up", None, "identified", None, "now"),
         )
         conn.commit()
         conn.close()
@@ -134,8 +139,8 @@ class ArrangementAndSharingTests(unittest.TestCase):
             ("task-travel", "plan-travel", "p1", "Review travel", "Choose whether travel help is needed.", "app_suggestion", "[]", "[]", "Pickup needed", "open", 0, None, None),
         )
         conn.execute(
-            "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?)",
-            ("task-travel", "travel", "2026-10-08", "Neuro-Oncology Clinic", None, "identified", None, "now"),
+            "INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?,?)",
+            ("task-travel", "travel", "2026-10-08", None, "Neuro-Oncology Clinic", None, "identified", None, "now"),
         )
         conn.commit()
         conn.close()

@@ -16,6 +16,7 @@ class ActionRequest(TypedDict):
     task_id: str
     action_type: str
     documented_date: str | None
+    documented_time: str | None
     documented_service: str | None
     order_reference: str | None
     source_version_ids: list[str]
@@ -68,7 +69,7 @@ def _appointment_agent(state: ActionState):
                 "payload": {
                     "clinic": item["documented_service"] or "Clinic",
                     "date": item["documented_date"] or "",
-                    "time": "10:00",
+                    "time": item.get("documented_time") or "",
                     "timezone": "America/New_York",
                     "appointment_type": "Follow-up",
                     "schedule_origin": "Provider availability on the documented date",
@@ -133,7 +134,7 @@ def _travel_agent(state: ActionState):
                     "pickup": "",
                     "destination": item["documented_service"] or "Clinic",
                     "date": item["documented_date"] or "",
-                    "time": "09:00",
+                    "time": item.get("documented_time") or "09:00",
                     "passengers": 1,
                     "cost": "Pending route details",
                 },

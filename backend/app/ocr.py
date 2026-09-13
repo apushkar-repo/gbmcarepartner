@@ -35,7 +35,7 @@ class LlamaParseAdapter:
         temp = Path("/tmp") / f"carebridge-{filename}"
         temp.write_bytes(content)
         try:
-            parser = LlamaParse(api_key=self.api_key, result_type="markdown", verbose=False)
+            parser = LlamaParse(api_key=self.api_key, result_type="text", verbose=False)
             documents = await asyncio.to_thread(parser.load_data, str(temp))
             text = "\n\n".join(getattr(doc, "text", str(doc)) for doc in documents)
             return OcrResult(text=text, pages=len(documents), provider="llamaparse")

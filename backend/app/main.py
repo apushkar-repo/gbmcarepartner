@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS care_questions (id TEXT PRIMARY KEY, patient_id TEXT 
 CREATE TABLE IF NOT EXISTS care_question_events (id TEXT PRIMARY KEY, question_id TEXT NOT NULL REFERENCES care_questions(id), action TEXT NOT NULL, actor_role TEXT NOT NULL, actor_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS preparation_plans (id TEXT PRIMARY KEY, patient_id TEXT NOT NULL REFERENCES patients(id), status TEXT NOT NULL, summary TEXT NOT NULL, message TEXT NOT NULL, verified INTEGER NOT NULL, model TEXT, created_by_role TEXT NOT NULL, created_by_id TEXT NOT NULL, created_at TEXT NOT NULL, approved_by TEXT, approved_at TEXT);
 CREATE TABLE IF NOT EXISTS preparation_tasks (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES preparation_plans(id), patient_id TEXT NOT NULL REFERENCES patients(id), title TEXT NOT NULL, description TEXT NOT NULL, origin_type TEXT NOT NULL, source_version_ids TEXT NOT NULL, source_question_ids TEXT NOT NULL, blocked_reason TEXT, status TEXT NOT NULL, position INTEGER NOT NULL, completed_by TEXT, completed_at TEXT);
-CREATE TABLE IF NOT EXISTS preparation_task_actions (task_id TEXT PRIMARY KEY REFERENCES preparation_tasks(id), action_type TEXT NOT NULL, documented_date TEXT, documented_service TEXT, order_reference TEXT, specialist_status TEXT NOT NULL, arrangement_id TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS preparation_task_actions (task_id TEXT PRIMARY KEY REFERENCES preparation_tasks(id), action_type TEXT NOT NULL, documented_date TEXT, documented_time TEXT, documented_service TEXT, order_reference TEXT, specialist_status TEXT NOT NULL, arrangement_id TEXT, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS preparation_events (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL REFERENCES preparation_plans(id), task_id TEXT, action TEXT NOT NULL, actor_role TEXT NOT NULL, actor_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, patient_id TEXT NOT NULL REFERENCES patients(id), task_id TEXT NOT NULL REFERENCES preparation_tasks(id), current_version INTEGER NOT NULL, status TEXT NOT NULL, idempotency_key TEXT, provider_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reminder_versions (reminder_id TEXT NOT NULL REFERENCES reminders(id), version INTEGER NOT NULL, text TEXT NOT NULL, channel TEXT NOT NULL, recipient TEXT NOT NULL, recipient_label TEXT NOT NULL, local_date TEXT NOT NULL, local_time TEXT NOT NULL, timezone TEXT NOT NULL, utc_schedule TEXT NOT NULL, source_version_ids TEXT NOT NULL, source_question_ids TEXT NOT NULL, approval_hash TEXT, approved_by TEXT, approved_at TEXT, consent_version TEXT NOT NULL, PRIMARY KEY(reminder_id, version));
@@ -92,6 +92,14 @@ def db():
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    action_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(preparation_task_actions)").fetchall()
+    }
+    if "documented_time" not in action_columns:
+        conn.execute(
+            "ALTER TABLE preparation_task_actions ADD COLUMN documented_time TEXT"
+        )
     return conn
 
 @app.on_event("startup")
@@ -199,6 +207,10 @@ def authorize_patient(conn: sqlite3.Connection, patient_id: str, actor_role: str
             WHERE g.patient_id=? AND lower(g.partner_email)=lower(?) AND g.status='active'
             AND COALESCE(p.can_view_records,1)=1""", (patient_id, actor_id)).fetchone() is not None
     if not allowed: raise HTTPException(403, "You do not have access to this patient workspace.")
+
+def require_clinician(actor_role: str, actor_id: str):
+    if actor_role != "clinician" or not actor_id:
+        raise HTTPException(403, "Clinician access is required.")
 
 def serialize_care_question(row: sqlite3.Row):
     item = dict(row)
@@ -580,31 +592,36 @@ def invalidate_preparation_questions(
     return affected_plan_ids
 
 @app.get("/api/v1/patients")
-def list_patients():
+def list_patients(actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     conn = db(); rows = conn.execute("""SELECT p.id,p.name,p.email,p.phone,p.created_at,COUNT(dv.id) AS summary_count FROM patients p LEFT JOIN patient_documents pd ON pd.patient_id=p.id LEFT JOIN extraction_jobs j ON j.document_id=pd.document_id LEFT JOIN document_versions dv ON dv.job_id=j.id GROUP BY p.id ORDER BY p.name""").fetchall(); conn.close()
     return [dict(row) for row in rows]
 
 @app.post("/api/v1/patients", status_code=201)
-def create_patient(patient: PatientCreate):
+def create_patient(patient: PatientCreate, actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     if not patient.name.strip() or (not patient.email and not patient.phone):
         raise HTTPException(400, "Name and at least one contact method are required.")
     patient_id = f"CBP-{uuid4().hex[:8].upper()}"
     now = datetime.now(timezone.utc).isoformat()
-    conn = db(); conn.execute("INSERT INTO patients VALUES (?,?,?,?,?,?)", (patient_id, patient.name.strip(), patient.email, patient.phone, patient.actor_id, now)); conn.commit(); conn.close()
+    conn = db(); conn.execute("INSERT INTO patients VALUES (?,?,?,?,?,?)", (patient_id, patient.name.strip(), patient.email, patient.phone, actor_id, now)); conn.commit(); conn.close()
     return {"id": patient_id, "name": patient.name.strip(), "email": patient.email, "phone": patient.phone, "created_at": now}
 
 @app.post("/api/v1/patients/{patient_id}/care-partners", status_code=201)
-def grant_care_partner(patient_id: str, grant: CarePartnerGrant):
+def grant_care_partner(patient_id: str, grant: CarePartnerGrant, actor_role: str = "", actor_id: str = ""):
     email = grant.partner_email.strip().lower()
     if not email: raise HTTPException(400, "Care-partner email is required.")
     conn = db()
+    authorize_patient(conn, patient_id, actor_role, actor_id)
+    if actor_role != "patient" or actor_id != patient_id:
+        conn.close(); raise HTTPException(403, "Only the patient can authorize a care partner.")
     if conn.execute("SELECT 1 FROM patients WHERE id=?", (patient_id,)).fetchone() is None:
         conn.close(); raise HTTPException(404, "Patient not found.")
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute("SELECT id FROM care_partner_grants WHERE patient_id=? AND partner_email=?", (patient_id, email)).fetchone()
     grant_id = existing["id"] if existing else str(uuid4())
     conn.execute("INSERT INTO care_partner_grants VALUES (?,?,?,?,?) ON CONFLICT(patient_id,partner_email) DO UPDATE SET status='active'", (grant_id, patient_id, email, "active", now))
-    conn.execute("INSERT INTO care_partner_permissions VALUES (?,?,?,?,?,?,?) ON CONFLICT(grant_id) DO NOTHING", (grant_id, 1, 1, 0, 1, "demo-clinician", now))
+    conn.execute("INSERT INTO care_partner_permissions VALUES (?,?,?,?,?,?,?) ON CONFLICT(grant_id) DO NOTHING", (grant_id, 1, 1, 0, 1, actor_id, now))
     conn.commit(); conn.close()
     return {"id": grant_id, "patient_id": patient_id, "partner_email": email, "status": "active"}
 
@@ -651,7 +668,10 @@ def update_care_partner(patient_id: str, grant_id: str, request: CarePartnerPerm
 def health(): return {"status": "ok", "service": "carebridge-api"}
 
 @app.post("/api/v1/documents", response_model=DocumentOut, status_code=202)
-async def upload_document(file: Annotated[UploadFile, File()], workspace_id: str = "demo-workspace", patient_id: str | None = None):
+async def upload_document(file: Annotated[UploadFile, File()], workspace_id: str = "demo-workspace", patient_id: str | None = None, actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
+    if not patient_id:
+        raise HTTPException(400, "A patient workspace is required for document upload.")
     if file.content_type not in ALLOWED:
         raise HTTPException(415, "Only PDF, JPEG, and PNG files are supported.")
     content = await file.read(MAX_BYTES + 1)
@@ -676,23 +696,27 @@ async def upload_document(file: Annotated[UploadFile, File()], workspace_id: str
     return DocumentOut(id=document_id, filename=file.filename or "untitled", content_type=file.content_type, size_bytes=len(content), status="queued", extraction_job_id=job_id)
 
 @app.get("/api/v1/documents")
-def list_documents(workspace_id: str = "demo-workspace"):
+def list_documents(workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     conn = db(); rows = conn.execute("SELECT id,filename,content_type,size_bytes,status,created_at FROM documents WHERE workspace_id=? ORDER BY created_at DESC", (workspace_id,)).fetchall(); conn.close()
     return [dict(row) for row in rows]
 
 @app.get("/api/v1/documents/{document_id}")
-def get_document(document_id: str, workspace_id: str = "demo-workspace"):
+def get_document(document_id: str, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
     conn = db()
     row = conn.execute("""
         SELECT d.id, d.filename, d.content_type, d.size_bytes, d.sha256,
-               d.status, d.created_at, j.id AS extraction_job_id, j.status AS extraction_status
+               d.status, d.created_at, j.id AS extraction_job_id, j.status AS extraction_status,
+               pd.patient_id
         FROM documents d JOIN extraction_jobs j ON j.document_id = d.id
+        JOIN patient_documents pd ON pd.document_id=d.id
         WHERE d.id = ? AND d.workspace_id = ?
     """, (document_id, workspace_id)).fetchone()
-    conn.close()
     if row is None:
+        conn.close()
         raise HTTPException(404, "Document not found.")
-    return dict(row)
+    authorize_patient(conn, row["patient_id"], actor_role, actor_id)
+    result = dict(row); result.pop("patient_id", None); conn.close(); return result
 
 @app.get("/api/v1/documents/{document_id}/content")
 def get_document_content(document_id: str, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
@@ -703,22 +727,24 @@ def get_document_content(document_id: str, workspace_id: str = "demo-workspace",
     return FileResponse(path, media_type=row["content_type"], filename=row["filename"], content_disposition_type="inline")
 
 @app.get("/api/v1/extraction-jobs/{job_id}")
-def get_extraction_job(job_id: str, workspace_id: str = "demo-workspace"):
+def get_extraction_job(job_id: str, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
     conn = db()
     row = conn.execute("""
         SELECT j.id, j.document_id, j.status, j.created_at,
-               r.pages, r.provider
+               r.pages, r.provider, pd.patient_id
         FROM extraction_jobs j JOIN documents d ON d.id = j.document_id
+        JOIN patient_documents pd ON pd.document_id=d.id
         LEFT JOIN extraction_results r ON r.job_id = j.id
         WHERE j.id = ? AND d.workspace_id = ?
     """, (job_id, workspace_id)).fetchone()
-    conn.close()
     if row is None:
+        conn.close()
         raise HTTPException(404, "Extraction job not found.")
-    return dict(row)
+    authorize_patient(conn, row["patient_id"], actor_role, actor_id)
+    result = dict(row); result.pop("patient_id", None); conn.close(); return result
 
 @app.get("/api/v1/extraction-jobs/{job_id}/result")
-def get_extraction_result(job_id: str, workspace_id: str = "demo-workspace"):
+def get_extraction_result(job_id: str, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
     conn = db()
     row = conn.execute("""
         SELECT r.job_id, j.document_id, pd.patient_id, r.text AS original_text,
@@ -730,45 +756,49 @@ def get_extraction_result(job_id: str, workspace_id: str = "demo-workspace"):
         LEFT JOIN patient_documents pd ON pd.document_id=d.id
         WHERE r.job_id = ? AND d.workspace_id = ?
     """, (job_id, workspace_id)).fetchone()
-    conn.close()
     if row is None:
+        conn.close()
         raise HTTPException(404, "Extraction result not available.")
-    return dict(row)
+    authorize_patient(conn, row["patient_id"], actor_role, actor_id)
+    result = dict(row); conn.close(); return result
 
 @app.post("/api/v1/extraction-jobs/{job_id}/transcript", status_code=201)
-def save_transcript_correction(job_id: str, correction: TranscriptCorrection, workspace_id: str = "demo-workspace"):
+def save_transcript_correction(job_id: str, correction: TranscriptCorrection, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     if not correction.text.strip(): raise HTTPException(400, "Transcript text is required.")
     conn = db()
-    exists = conn.execute("SELECT 1 FROM extraction_jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=? AND d.workspace_id=?", (job_id, workspace_id)).fetchone()
+    exists = conn.execute("SELECT pd.patient_id FROM extraction_jobs j JOIN documents d ON d.id=j.document_id JOIN patient_documents pd ON pd.document_id=d.id WHERE j.id=? AND d.workspace_id=?", (job_id, workspace_id)).fetchone()
     if exists is None:
         conn.close(); raise HTTPException(404, "Extraction job not found.")
     version = conn.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM transcript_versions WHERE job_id=?", (job_id,)).fetchone()[0]
     transcript_id = str(uuid4())
-    conn.execute("INSERT INTO transcript_versions VALUES (?,?,?,?,?,?)", (transcript_id, job_id, correction.text, version, correction.actor_id, datetime.now(timezone.utc).isoformat()))
+    conn.execute("INSERT INTO transcript_versions VALUES (?,?,?,?,?,?)", (transcript_id, job_id, correction.text, version, actor_id, datetime.now(timezone.utc).isoformat()))
     conn.commit(); conn.close()
     return {"id": transcript_id, "job_id": job_id, "version": version}
 
 @app.post("/api/v1/extraction-jobs/{job_id}/publish", status_code=201)
-def publish_document(job_id: str, request: PublishRequest, workspace_id: str = "demo-workspace"):
+def publish_document(job_id: str, request: PublishRequest, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     if not request.approval:
         raise HTTPException(400, "Explicit approval is required.")
     if not request.audience.strip() or not request.text.strip():
         raise HTTPException(400, "Audience and reviewed transcript are required.")
     conn = db()
-    exists = conn.execute("SELECT 1 FROM extraction_jobs j JOIN documents d ON d.id=j.document_id WHERE j.id=? AND d.workspace_id=?", (job_id, workspace_id)).fetchone()
+    exists = conn.execute("SELECT pd.patient_id FROM extraction_jobs j JOIN documents d ON d.id=j.document_id JOIN patient_documents pd ON pd.document_id=d.id WHERE j.id=? AND d.workspace_id=?", (job_id, workspace_id)).fetchone()
     if exists is None:
         conn.close(); raise HTTPException(404, "Extraction job not found.")
     version = conn.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM document_versions WHERE job_id=?", (job_id,)).fetchone()[0]
     version_id = str(uuid4())
     import json
     now=datetime.now(timezone.utc).isoformat()
-    conn.execute("INSERT INTO document_versions VALUES (?,?,?,?,?,?,?)", (version_id, job_id, json.dumps({"text": request.text, "audience": request.audience}, sort_keys=True), version, "indexing_pending", request.actor_id, now))
+    conn.execute("INSERT INTO document_versions VALUES (?,?,?,?,?,?,?)", (version_id, job_id, json.dumps({"text": request.text, "audience": request.audience}, sort_keys=True), version, "indexing_pending", actor_id, now))
     conn.execute("INSERT INTO outbox_events VALUES (?,?,?,?,?,?,?,?,?)", (str(uuid4()),"DocumentPublished",version_id,json.dumps({"version_id":version_id,"job_id":job_id,"version":version,"audience":request.audience}),"pending",0,None,now,None))
     conn.commit(); conn.close()
     return {"id": version_id, "job_id": job_id, "version": version, "status": "indexing_pending", "audience": request.audience}
 
 @app.post("/api/v1/document-versions/{version_id}/index")
-def index_document_version(version_id: str):
+def index_document_version(version_id: str, actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     conn = db()
     row = conn.execute("""
       SELECT dv.id,dv.payload,dv.version,dv.job_id,dv.status,pd.patient_id,j.document_id FROM document_versions dv
@@ -856,15 +886,17 @@ def run_publication_index_worker(actor_role: str = "", actor_id: str = ""):
     conn=db(); rows=conn.execute("SELECT aggregate_id FROM outbox_events WHERE event_type='DocumentPublished' AND status='pending' ORDER BY created_at LIMIT 20").fetchall(); conn.close()
     processed=[]; failed=[]
     for row in rows:
-        try: processed.append(index_document_version(row["aggregate_id"]))
+        try: processed.append(index_document_version(row["aggregate_id"], actor_role, actor_id))
         except Exception as exc:
             failed.append(row["aggregate_id"]); failure=db(); failure.execute("UPDATE outbox_events SET attempts=attempts+1,last_error=? WHERE event_type='DocumentPublished' AND aggregate_id=?",(type(exc).__name__,row["aggregate_id"])); failure.commit(); failure.close()
     return {"processed":len(processed),"failed":len(failed),"pending_examined":len(rows)}
 
 @app.get("/api/v1/patients/{patient_id}/search")
 def search_patient_summaries(patient_id: str, q: str, actor_role: str = "", actor_id: str = ""):
-    if not q.strip(): return {"query": q, "retrieval_mode": "bm25", "results": []}
     conn = db(); authorize_patient(conn, patient_id, actor_role, actor_id)
+    if not q.strip():
+        conn.close()
+        return {"query": q, "retrieval_mode": "bm25", "results": []}
     tokens = re.findall(r"[A-Za-z0-9]+", q.lower())
     lexical_rows = []
     if tokens:
@@ -1246,7 +1278,10 @@ def create_preparation_plan(
         )
         action_type=item.get("action_type","none")
         specialist_status="not_applicable" if action_type=="none" else "identified"
-        conn.execute("INSERT INTO preparation_task_actions VALUES (?,?,?,?,?,?,?,?)",(task_id,action_type,item.get("documented_date"),item.get("documented_service"),item.get("order_reference"),specialist_status,None,now))
+        conn.execute("""INSERT INTO preparation_task_actions
+          (task_id,action_type,documented_date,documented_time,documented_service,
+           order_reference,specialist_status,arrangement_id,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?)""",(task_id,action_type,item.get("documented_date"),item.get("documented_time"),item.get("documented_service"),item.get("order_reference"),specialist_status,None,now))
     record_preparation_event(
         conn, plan_id, None, "draft_generated", actor_role, actor_id,
         {"item_count": len(proposed["items"]), "verified": proposed["verified"]},
@@ -2246,6 +2281,7 @@ def orchestrate_preparation_actions(patient_id: str, plan_id: str, actor_id: str
             "task_id": row["task_id"],
             "action_type": row["action_type"],
             "documented_date": row["documented_date"],
+            "documented_time": row["documented_time"],
             "documented_service": row["documented_service"],
             "order_reference": row["order_reference"],
             "source_version_ids": json.loads(row["source_version_ids"]),
@@ -2581,7 +2617,8 @@ def list_patient_summaries(patient_id: str, actor_role: str = "", actor_id: str 
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
 @app.post("/api/v1/extraction-jobs/{job_id}/process")
-async def process_extraction_job(job_id: str, workspace_id: str = "demo-workspace"):
+async def process_extraction_job(job_id: str, workspace_id: str = "demo-workspace", actor_role: str = "", actor_id: str = ""):
+    require_clinician(actor_role, actor_id)
     conn = db()
     row = conn.execute("""
         SELECT j.id, j.document_id, d.filename FROM extraction_jobs j

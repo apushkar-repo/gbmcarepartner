@@ -29,6 +29,7 @@ import {
   saveTranscriptCorrection,
   uploadDocument,
 } from "../api";
+import { markdownToPlainText } from "../utils/plainText";
 
 export function Documents() {
   const [summaries, setSummaries] = useState<PublishedSummary[]>([]);
@@ -76,8 +77,10 @@ export function Documents() {
             <Badge>Approved</Badge>
             <h2>{summary.filename}</h2>
             <p>
-              {summary.payload.text.slice(0, 180)}
-              {summary.payload.text.length > 180 ? "…" : ""}
+              {markdownToPlainText(summary.payload.text).slice(0, 180)}
+              {markdownToPlainText(summary.payload.text).length > 180
+                ? "…"
+                : ""}
             </p>
             <div className="card-meta">
               Saved {new Date(summary.created_at).toLocaleString()}
@@ -165,7 +168,9 @@ export function PublishedSummaryDetail() {
             <h2>Reviewed summary</h2>
             <FileText size={20} />
           </div>
-          <div className="summary-text">{summary.payload.text}</div>
+          <div className="summary-text">
+            {markdownToPlainText(summary.payload.text)}
+          </div>
           <Link className="button primary wide" to="/app/ask">
             Ask a question about this summary
             <ArrowRight size={17} />
@@ -414,7 +419,7 @@ export function ExtractionReview() {
     if (!jobId) return;
     getExtractionResult(jobId)
       .then((result) => {
-        setText(result.text);
+        setText(markdownToPlainText(result.text));
         setDocumentId(result.document_id);
         if (result.patient_id)
           sessionStorage.setItem("carebridge.patientId", result.patient_id);
@@ -476,7 +481,7 @@ export function ExtractionReview() {
           <p>{error}</p>
         </div>
       ) : (
-        <div className="review-grid">
+        <div className="review-grid extraction-review-grid">
           <section className="source-container">
             <div className="section-heading">
               <h2>Uploaded document</h2>
@@ -484,7 +489,7 @@ export function ExtractionReview() {
             </div>
             {documentId && (
               <img
-                className="source-paper"
+                className="source-paper extraction-source-preview"
                 src={documentContentUrl(documentId)}
                 alt="Uploaded visit summary"
               />
@@ -509,8 +514,8 @@ export function ExtractionReview() {
             <div className="notice compact">
               <Info size={18} />
               <p>
-                The text is displayed exactly as returned by OCR. Any edit is
-                saved as a new transcript version.
+                OCR formatting is converted to plain text for review. Any edit
+                is saved as a new transcript version.
               </p>
             </div>
             <button

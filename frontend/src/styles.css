@@ -1475,9 +1475,32 @@ fieldset {
 }
 .review-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 26px;
   align-items: start;
+}
+.extraction-review-grid {
+  align-items: stretch;
+}
+.extraction-review-grid > section {
+  min-width: 0;
+}
+.extraction-review-grid .source-container,
+.extraction-review-grid .review-fields {
+  display: flex;
+  flex-direction: column;
+}
+.source-paper.extraction-source-preview {
+  width: 100%;
+  min-height: 640px;
+  flex: 1;
+  padding: 0;
+  object-fit: contain;
+}
+.extraction-review-grid textarea {
+  min-height: 420px;
+  flex: 1;
+  white-space: pre-wrap;
 }
 .source-container {
   background: #efeee7;
@@ -2546,6 +2569,9 @@ fieldset {
   .two-column,
   .review-grid {
     grid-template-columns: 1fr;
+  }
+  .extraction-source-preview {
+    min-height: 380px;
   }
   .review-grid .source-paper {
     max-width: 440px;
