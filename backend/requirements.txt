@@ -1,0 +1,15 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+python-dotenv==1.0.1
+llama-parse==0.6.32
+openai>=3,<4
+pinecone>=5,<8
+langgraph>=1.2,<2
+langsmith>=0.4,<1
+ragas==0.4.3
+# Compatibility pins for RAGAS 0.4.3 with the current application stack.
+instructor>=1.17,<2
+langchain-openai>=1.6,<2
+langchain-community>=0.4.2,<1
+tenacity>=9.1.2,<10
